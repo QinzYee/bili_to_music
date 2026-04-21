@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+installer_output/
+*.egg-info/
+.env
+.idea/
+.vscode/
+*.exe
+!resources/ffmpeg.exe
