@@ -19,7 +19,7 @@ from core.bilibili_api import extract_bvid, get_video_info, get_audio_url
 from core.downloader import download_file
 from core.audio_utils import convert_audio, is_ffmpeg_available
 from utils.filename_utils import build_filename
-from config import DEFAULT_SAVE_DIR, DEFAULT_FORMAT, MAX_WORKERS
+from config import DEFAULT_SAVE_DIR, DEFAULT_FORMAT, RESOURCE_DIR
 
 
 class ImageViewerDialog(QDialog):
@@ -164,10 +164,7 @@ class TutorialDialog(QDialog):
     
     def _get_resource_path(self):
         """获取资源目录路径"""
-        if getattr(sys, 'frozen', False):
-            return os.path.join(os.path.dirname(sys.executable), 'resources')
-        else:
-            return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'resources')
+        return RESOURCE_DIR
     
     def _add_heading(self, text, level):
         """添加标题"""
@@ -256,7 +253,9 @@ class TutorialDialog(QDialog):
         md_path = os.path.join(self._get_resource_path(), "图文教程.md")
         
         if not os.path.exists(md_path):
-            self._add_paragraph("教程文件未找到！")
+            # 显示调试信息
+            debug_info = f"教程文件未找到！\n尝试路径: {md_path}\n资源目录: {self._get_resource_path()}"
+            self._add_paragraph(debug_info)
             self.content_layout.addStretch()
             return
         
@@ -440,11 +439,7 @@ class BatchDownloadWorker(QThread):
                         return
 
                     self.log.emit(f"  转换 P{page_num}...")
-                    if self.fmt == "m4a":
-                        if os.path.isfile(tmp_path):
-                            os.replace(tmp_path, save_path)
-                    else:
-                        convert_audio(tmp_path, save_path, self.fmt)
+                    convert_audio(tmp_path, save_path, self.fmt)
 
                     self.log.emit(f"  P{page_num} 完成: {filename}")
 
@@ -464,7 +459,22 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.video_infos = {}
         self.download_worker = None
+        self._parse_workers = []  # 跟踪所有解析工作线程
         self._setup_ui()
+    
+    def closeEvent(self, event):
+        """窗口关闭时清理资源"""
+        try:
+            # 取消下载
+            if self.download_worker and self.download_worker.isRunning():
+                self.download_worker.cancel()
+                self.download_worker.wait()
+            
+            # 保留解析线程引用，让Qt自然处理
+            event.accept()
+        except Exception as e:
+            print(f"关闭窗口时出错: {e}")
+            event.accept()
 
     def _setup_ui(self):
         self.setWindowTitle("B站视频音频下载工具")
@@ -852,50 +862,85 @@ class MainWindow(QMainWindow):
             worker.finished.connect(self._on_parse_finished)
             worker.error.connect(self._on_parse_error)
             worker.start()
-            setattr(self, f"_parse_worker_{row}", worker)
+            
+            # 保存到列表中，保持引用但不主动删除
+            self._parse_workers.append(worker)
 
         self._update_task_count()
         self._log(f"正在解析 {len(urls)} 个链接...")
 
     def _on_parse_finished(self, info: dict, row_id: str):
-        row = int(row_id)
-        total_pages = len(info["pages"])
+        try:
+            row = int(row_id)
+            
+            # 安全检查
+            if row < 0 or row >= self.task_table.rowCount():
+                self._log(f"警告: 无效的行号 {row}")
+                return
+            
+            total_pages = len(info.get("pages", []))
 
-        self.task_table.item(row, 0).setText(info["title"])
-        self.task_table.item(row, 4).setText(str(total_pages))
-        self.task_table.item(row, 5).setText("已解析")
+            title_item = self.task_table.item(row, 0)
+            if title_item:
+                title_item.setText(info.get("title", "未知标题"))
+                title_item.setData(Qt.UserRole, info.get("bvid", ""))  # 存储 BV 号作为唯一标识
+            
+            total_pages_item = self.task_table.item(row, 4)
+            if total_pages_item:
+                total_pages_item.setText(str(total_pages))
+            
+            status_item = self.task_table.item(row, 5)
+            if status_item:
+                status_item.setText("已解析")
 
-        end_spin = self.task_table.cellWidget(row, 3)
-        if end_spin:
-            end_spin.setValue(total_pages)
-            end_spin.setMaximum(total_pages)
+            end_spin = self.task_table.cellWidget(row, 3)
+            if end_spin:
+                end_spin.setValue(total_pages)
+                end_spin.setMaximum(max(1, total_pages))  # 确保至少有1页
 
-        start_spin = self.task_table.cellWidget(row, 2)
-        if start_spin:
-            start_spin.setMaximum(total_pages)
+            start_spin = self.task_table.cellWidget(row, 2)
+            if start_spin:
+                start_spin.setMaximum(max(1, total_pages))
 
-        self.video_infos[row] = info
+            self.video_infos[row] = info
 
-        self._log(f"解析成功: {info['title']} (共{total_pages}P)")
-
-        self._pending_parse -= 1
-        if self._pending_parse <= 0:
-            self.parse_btn.setEnabled(True)
-            self.download_btn.setEnabled(True)
-            self._log(f"{self._total_parse}个已解析完成！")
+            self._log(f"解析成功: {info.get('title', '未知')} (共{total_pages}P)")
+        except Exception as e:
+            self._log(f"处理解析结果时出错: {e}")
+            import traceback
+            self._log(f"错误详情: {traceback.format_exc()}")
+        finally:
+            # 更新解析状态
+            self._pending_parse -= 1
+            if self._pending_parse <= 0:
+                self.parse_btn.setEnabled(True)
+                has_valid = len(self.video_infos) > 0
+                self.download_btn.setEnabled(has_valid)
+                self._log(f"{self._total_parse}个已解析完成！")
 
     def _on_parse_error(self, err: str, row_id: str):
-        row = int(row_id)
-        self.task_table.item(row, 0).setText("解析失败")
-        self.task_table.item(row, 5).setText("失败")
-        self._log(f"第{row + 1}行解析失败: {err}")
-
-        self._pending_parse -= 1
-        if self._pending_parse <= 0:
-            self.parse_btn.setEnabled(True)
-            has_valid = any(row in self.video_infos for row in range(self.task_table.rowCount()))
-            self.download_btn.setEnabled(has_valid)
-            self._log(f"{self._total_parse}个已解析完成（部分失败）")
+        try:
+            row = int(row_id)
+            
+            if row >= 0 and row < self.task_table.rowCount():
+                title_item = self.task_table.item(row, 0)
+                if title_item:
+                    title_item.setText("解析失败")
+                status_item = self.task_table.item(row, 5)
+                if status_item:
+                    status_item.setText("失败")
+            
+            self._log(f"第{row + 1}行解析失败: {err}")
+        except Exception as e:
+            self._log(f"处理解析错误时出错: {e}")
+        finally:
+            # 更新解析状态
+            self._pending_parse -= 1
+            if self._pending_parse <= 0:
+                self.parse_btn.setEnabled(True)
+                has_valid = len(self.video_infos) > 0
+                self.download_btn.setEnabled(has_valid)
+                self._log(f"{self._total_parse}个已解析完成（部分失败）")
 
     def _on_remove_selected(self):
         rows = set(item.row() for item in self.task_table.selectedItems())
@@ -915,14 +960,27 @@ class MainWindow(QMainWindow):
 
     def _rebuild_info_map(self):
         new_map = {}
-        for row in range(self.task_table.rowCount()):
-            old_key = None
-            for k, v in self.video_infos.items():
-                if self.task_table.item(row, 0) and v["title"] == self.task_table.item(row, 0).text():
-                    old_key = k
-                    break
-            if old_key is not None and old_key in self.video_infos:
-                new_map[row] = self.video_infos[old_key]
+        try:
+            # 先创建一个 BV 号到信息的映射
+            bv_to_info = {}
+            for v in self.video_infos.values():
+                if isinstance(v, dict) and "bvid" in v:
+                    bv_to_info[v["bvid"]] = v
+            
+            for row in range(self.task_table.rowCount()):
+                try:
+                    title_item = self.task_table.item(row, 0)
+                    if title_item:
+                        bvid = title_item.data(Qt.UserRole)
+                        if bvid and bvid in bv_to_info:
+                            new_map[row] = bv_to_info[bvid]
+                except Exception as e:
+                    self._log(f"处理第 {row} 行时出错: {e}")
+                    continue
+        except Exception as e:
+            self._log(f"重建信息映射时出错: {e}")
+            import traceback
+            self._log(f"错误详情: {traceback.format_exc()}")
         return new_map
 
     def _on_batch_download(self):

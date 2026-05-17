@@ -4,6 +4,7 @@ import subprocess
 import zipfile
 from datetime import datetime
 
+
 APP_NAME = "BilibiliAudioDownloader"
 APP_VERSION = "1.0.0"
 DIST_DIR = "dist"
@@ -13,52 +14,158 @@ ZIP_NAME = f"{APP_NAME}_v{APP_VERSION}_{datetime.now().strftime('%Y%m%d')}.zip"
 
 
 def clean_old_build():
+    """清理旧的构建文件"""
     print("清理旧的构建文件...")
-    for d in [DIST_DIR, OUTPUT_DIR]:
+    for d in [DIST_DIR, OUTPUT_DIR, "build"]:
         if os.path.exists(d):
             shutil.rmtree(d)
     os.makedirs(DIST_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def build_pyinstaller():
-    print("使用PyInstaller构建程序...")
-    cmd = [
-        "pyinstaller",
-        "main.py",
-        "--noconfirm",
-        "--onedir",
-        "--windowed",
-        "--name", APP_NAME,
-        "--icon", "resources/icon.ico",
-        "--add-data", "resources/ffmpeg.exe;resources",
-        "--add-data", "resources/icon.ico;resources",
-        "--add-data", "resources/图文教程.md;resources",
-        "--add-data", "resources/提取bv图文教程1.png;resources",
-        "--add-data", "resources/提取bv图文教程2.png;resources",
-        "--add-data", "resources/界面预览.png;resources",
-    ]
+def create_pyinstaller_spec():
+    """创建 PyInstaller spec 文件以获得更精细的控制"""
+    spec_content = '''# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+a = Analysis(
+    ['main.py'],
+    pathex=[],
+    binaries=[],
+    datas=[
+        ('resources/ffmpeg.exe', 'resources'),
+        ('resources/icon.ico', 'resources'),
+        ('resources/图文教程.md', 'resources'),
+        ('resources/提取bv图文教程1.png', 'resources'),
+        ('resources/提取bv图文教程2.png', 'resources'),
+        ('resources/界面预览.png', 'resources'),
+    ],
+    hiddenimports=[
+        'PySide6.QtCore',
+        'PySide6.QtGui',
+        'PySide6.QtWidgets',
+    ],
+    hookspath=[],
+    hooksconfig={{}},
+    runtime_hooks=[],
+    excludes=[
+        'tkinter',
+        'matplotlib',
+        'numpy',
+        'pandas',
+        'scipy',
+        'PIL',
+        'cv2',
+        'PySide6.QtWebEngine',
+        'PySide6.QtWebEngineCore',
+        'PySide6.QtWebEngineWidgets',
+        'PySide6.QtMultimedia',
+        'PySide6.QtMultimediaWidgets',
+        'PySide6.QtQuick',
+        'PySide6.QtQml',
+        'PySide6.QtSql',
+        'PySide6.QtTest',
+        'PySide6.QtXml',
+        'PySide6.QtXmlPatterns',
+        'PySide6.QtOpenGL',
+        'PySide6.QtOpenGLWidgets',
+        'PySide6.QtSvg',
+        'PySide6.QtSvgWidgets',
+        'PySide6.QtNetwork',
+        'PySide6.QtPrintSupport',
+        'PySide6.QtHelp',
+        'PySide6.QtUiTools',
+        'PySide6.QtDesigner',
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='{APP_NAME}',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon='resources/icon.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='{APP_NAME}',
+)
+'''.format(APP_NAME=APP_NAME)
+
+    with open(f"{APP_NAME}.spec", 'w', encoding='utf-8') as f:
+        f.write(spec_content)
+    print(f"已创建 {APP_NAME}.spec 文件")
+
+
+def build_with_spec():
+    """使用 spec 文件构建"""
+    print("使用 PyInstaller 构建程序...")
+    cmd = ["pyinstaller", "--clean", f"{APP_NAME}.spec"]
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise Exception("PyInstaller构建失败")
+        raise Exception("PyInstaller 构建失败")
 
 
-def create_zip():
-    print(f"创建压缩包: {ZIP_NAME}...")
-    zip_path = os.path.join(OUTPUT_DIR, ZIP_NAME)
-
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(BUILD_DIR):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.join(APP_NAME, os.path.relpath(file_path, BUILD_DIR))
-                zf.write(file_path, arcname)
-
-    print(f"压缩包已创建: {os.path.abspath(zip_path)}")
-    return zip_path
+def optimize_build():
+    """优化构建输出，删除不必要的文件"""
+    print("优化构建输出...")
+    
+    # 删除不需要的 Qt 插件，但保留必要的
+    plugins_dir = os.path.join(BUILD_DIR, "PySide6", "plugins")
+    if os.path.exists(plugins_dir):
+        # 保留的插件列表
+        keep_plugins = [
+            "platforms",
+            "styles",
+            "platformthemes",
+            "iconengines",
+            "imageformats",
+        ]
+        for item in os.listdir(plugins_dir):
+            item_path = os.path.join(plugins_dir, item)
+            if item not in keep_plugins:
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                else:
+                    os.remove(item_path)
+    
+    # 清理 translations 目录
+    translations_dir = os.path.join(BUILD_DIR, "PySide6", "translations")
+    if os.path.exists(translations_dir):
+        for item in os.listdir(translations_dir):
+            if not item.startswith("qt_zh") and not item.startswith("qtbase_zh"):
+                item_path = os.path.join(translations_dir, item)
+                if os.path.isfile(item_path):
+                    os.remove(item_path)
 
 
 def create_readme_in_package():
+    """在打包目录中创建使用说明"""
     readme_content = """B站视频音频下载工具
 ================
 
@@ -81,17 +188,70 @@ def create_readme_in_package():
         f.write(readme_content)
 
 
+def create_zip():
+    """创建压缩包"""
+    print(f"创建压缩包: {ZIP_NAME}...")
+    zip_path = os.path.join(OUTPUT_DIR, ZIP_NAME)
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(BUILD_DIR):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.join(APP_NAME, os.path.relpath(file_path, BUILD_DIR))
+                zf.write(file_path, arcname)
+
+    print(f"压缩包已创建: {os.path.abspath(zip_path)}")
+    zip_size = os.path.getsize(zip_path) / 1024 / 1024
+    print(f"压缩包大小: {zip_size:.2f} MB")
+    return zip_path
+
+
+def verify_resources():
+    """验证资源文件是否正确打包"""
+    print("验证资源文件...")
+    required_files = [
+        "resources/ffmpeg.exe",
+        "resources/icon.ico",
+        "resources/图文教程.md",
+        "resources/提取bv图文教程1.png",
+        "resources/提取bv图文教程2.png",
+        "resources/界面预览.png",
+    ]
+    
+    all_found = True
+    for f in required_files:
+        # 在 _internal 目录下查找
+        full_path = os.path.join(BUILD_DIR, "_internal", f)
+        if os.path.exists(full_path):
+            print(f"[OK] {f}")
+        else:
+            print(f"[X] {f} (未找到)")
+            all_found = False
+    
+    return all_found
+
+
 def main():
     try:
         clean_old_build()
-        build_pyinstaller()
+        create_pyinstaller_spec()
+        build_with_spec()
+        # 先禁用优化，确保程序能正常运行
+        # optimize_build()
         create_readme_in_package()
+        
+        if not verify_resources():
+            print("警告: 部分资源文件未找到！")
+        
         create_zip()
         print("\n构建完成！")
         print(f"压缩包位置: {os.path.abspath(os.path.join(OUTPUT_DIR, ZIP_NAME))}")
         print("解压缩后即可使用！")
+        
     except Exception as e:
         print(f"\n构建失败: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
     return 0
 

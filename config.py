@@ -6,7 +6,12 @@ APP_VERSION = "1.0.0"
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
-    RESOURCE_DIR = os.path.join(BASE_DIR, "resources")
+    # PyInstaller 打包后，资源文件位于 _internal 目录下
+    internal_dir = os.path.join(BASE_DIR, "_internal")
+    if os.path.exists(os.path.join(internal_dir, "resources")):
+        RESOURCE_DIR = os.path.join(internal_dir, "resources")
+    else:
+        RESOURCE_DIR = os.path.join(BASE_DIR, "resources")
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     RESOURCE_DIR = os.path.join(BASE_DIR, "resources")
@@ -24,8 +29,6 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2
 
 DOWNLOAD_CHUNK_SIZE = 8192
-
-MAX_WORKERS = 3
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
