@@ -1,18 +1,21 @@
 # Bilibili Audio Downloader - B站视频音频下载工具
 
-一个简单易用的 B站视频音频提取桌面软件，支持批量下载、多P视频，Windows 双击安装即可使用。
+一个简单易用的 B站视频音频提取桌面软件，支持批量下载、多P视频、从收藏夹批量提取BV号，Windows 解压即可使用。
 
 ## 功能特性
 
 - 图形化界面，操作简单直观
 - 支持多视频链接批量解析与下载
 - 支持多P视频，每个视频可独立调整P范围
+- 支持自定义下载后的文件名
+- 支持从B站收藏夹HTML源码批量提取BV号
+- 内置图文教程，新手也能快速上手
 - 支持两种音频格式：m4a（推荐，无需转码）和 mp3（需要 ffmpeg）
 - 下载进度实时显示（百分比、速度、剩余时间）
 - 支持取消下载
 - 自动过滤文件名非法字符
 - 已存在文件自动跳过
-- 生成 Windows 安装程序，支持桌面快捷方式和卸载
+- 程序崩溃日志自动记录
 
 ## 界面预览
 
@@ -20,16 +23,15 @@
 
 ## 快速开始
 
-### 方式一：安装版（推荐）
+### 方式一：便携版（推荐）
 
-1. 下载 `BilibiliAudioDownloader_Setup_1.0.0.exe`
-2. 双击运行安装程序
-3. 按照向导完成安装
-4. 从桌面快捷方式或开始菜单启动
+1. 下载 `BilibiliAudioDownloader_v1.0.0_YYYYMMDD.zip`
+2. 解压到任意目录
+3. 双击 `BilibiliAudioDownloader.exe` 运行
 
 ### 方式二：从源码运行
 
-**环境要求：** Python 3.10+
+**环境要求**：Python 3.10+
 
 ```bash
 # 克隆项目
@@ -45,11 +47,23 @@ python main.py
 
 ## 使用方法
 
-1. 在链接输入框中粘贴 B站视频链接，每行一个
+### 方式一：直接输入链接解析下载
+
+1. 在"解析下载"页面的链接输入框中粘贴 B站视频链接，每行一个
 2. 点击 **解析全部**，等待解析完成
-3. 在任务列表中调整每个视频的起始P和结束P
+3. 在任务列表中可调整每个视频的起始P、结束P，或自定义文件名
 4. 选择保存目录和下载格式
 5. 点击 **批量下载**，等待完成
+
+### 方式二：从收藏夹批量提取BV号
+
+1. 切换到"获取BV号"页面
+2. 在浏览器中打开B站收藏夹页面
+3. 按F12打开开发者工具，右键<html>标签选择Copy → Copy outerHTML
+4. 将HTML源码粘贴到输入框
+5. 点击 **解析BV号**
+6. 点击 **载入到解析下载** 自动跳转到下载页面并填充链接
+7. 按照方式一继续操作
 
 ### 支持的链接格式
 
@@ -66,7 +80,7 @@ https://b23.tv/xxxxxx
 | m4a  | B站原生格式，无需转码，音质最佳 | 否 |
 | mp3  | 通用格式，需要 ffmpeg 转码 | 是 |
 
-> 如果选择 mp3 但未安装 ffmpeg，程序会提示切换为 m4a 格式。
+> 如果选择 mp3 但未检测到 ffmpeg，程序会提示切换为 m4a 格式。工具已内置 ffmpeg。
 
 ## 项目结构
 
@@ -76,7 +90,9 @@ bili_to_music
 ├── main.py                  # 程序入口
 ├── config.py                # 全局配置
 ├── requirements.txt         # Python 依赖
-├── setup.iss                # Inno Setup 安装脚本
+├── build.py                 # 打包脚本
+├── build_fixed.py           # 修复版打包脚本
+├── complete_build.py        # 完整构建脚本
 │
 ├── gui/
 │   └── main_window.py       # 主界面（PySide6）
@@ -89,9 +105,15 @@ bili_to_music
 ├── utils/
 │   └── filename_utils.py    # 文件名处理
 │
-└── resources/
-    ├── icon.ico             # 应用图标
-    └── ffmpeg.exe           # ffmpeg（mp3 转码用）
+├── resources/
+│   ├── icon.ico             # 应用图标
+│   ├── ffmpeg.exe           # ffmpeg（mp3 转码用）
+│   ├── 图文教程.md          # 图文教程文档
+│   ├── 提取bv图文教程1.png  # 教程截图1
+│   ├── 提取bv图文教程2.png  # 教程截图2
+│   └── 界面预览.png         # 界面截图
+│
+└── logs/                    # 日志目录（运行时自动创建）
 ```
 
 ## 核心模块说明
@@ -127,6 +149,8 @@ bili_to_music
 PySide6 图形界面，包含：
 - `ParseWorker` — 多线程解析工作器
 - `BatchDownloadWorker` — 多线程批量下载工作器
+- `TutorialDialog` — 图文教程对话框
+- `ImageViewerDialog` — 图片查看器（支持放大缩小）
 - `MainWindow` — 主窗口，管理所有 UI 交互
 
 ## 打包发布
@@ -134,35 +158,26 @@ PySide6 图形界面，包含：
 ### 前置条件
 
 - PyInstaller：`pip install pyinstaller`
-- Inno Setup 6：[下载地址](https://jrsoftware.org/isdl.php)
 
-### 第一步：PyInstaller 打包
-
-```bash
-pyinstaller main.py --noconfirm --onedir --windowed ^
-  --icon=resources/icon.ico ^
-  --add-data "resources/ffmpeg.exe;resources" ^
-  --add-data "resources/icon.ico;resources" ^
-  --name BilibiliAudioDownloader
-```
-
-输出目录：`dist\BilibiliAudioDownloader\`
-
-### 第二步：Inno Setup 生成安装程序
+### 打包步骤
 
 ```bash
-ISCC.exe setup.iss
+# 第一步：PyInstaller 打包（使用 build_fixed.py）
+python build_fixed.py
+
+# 第二步：完成构建（生成 zip 包）
+python complete_build.py
 ```
 
-输出文件：`installer_output\BilibiliAudioDownloader_Setup_1.0.0.exe`
+输出文件：`output\BilibiliAudioDownloader_v1.0.0_YYYYMMDD.zip`
 
 ## 技术栈
 
-- **GUI 框架：** PySide6 (Qt for Python)
-- **网络请求：** requests
-- **音频转码：** ffmpeg
-- **打包工具：** PyInstaller
-- **安装程序：** Inno Setup 6
+- **GUI 框架**：PySide6 (Qt for Python)
+- **网络请求**：requests
+- **HTML解析**：beautifulsoup4 + lxml
+- **音频转码**：ffmpeg
+- **打包工具**：PyInstaller
 
 ## 兼容系统
 
@@ -181,3 +196,4 @@ ISCC.exe setup.iss
 
 - 部分视频可能因版权保护无法获取音频流
 - B站 API 可能随时变更，如遇解析失败请提交 Issue
+- 程序运行时产生的日志会保存在 `logs` 目录下
