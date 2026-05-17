@@ -4,9 +4,16 @@ import sys
 APP_NAME = "BilibiliAudioDownloader"
 APP_VERSION = "1.0.0"
 
-DEFAULT_SAVE_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "BilibiliAudio")
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+    RESOURCE_DIR = os.path.join(BASE_DIR, "resources")
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    RESOURCE_DIR = os.path.join(BASE_DIR, "resources")
 
-DEFAULT_FORMAT = "m4a"
+DEFAULT_SAVE_DIR = os.path.join(BASE_DIR, "downloads")
+
+DEFAULT_FORMAT = "mp3"
 SUPPORTED_FORMATS = ["m4a", "mp3"]
 
 API_VIDEO_INFO = "https://api.bilibili.com/x/web-interface/view"
@@ -25,11 +32,6 @@ HEADERS = {
     "Referer": "https://www.bilibili.com",
 }
 
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.join(os.path.dirname(sys.executable), "_internal")
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-FFMPEG_PATH = os.path.join(BASE_DIR, "resources", "ffmpeg.exe")
+FFMPEG_PATH = os.path.join(RESOURCE_DIR, "ffmpeg.exe")
 if not os.path.isfile(FFMPEG_PATH):
     FFMPEG_PATH = "ffmpeg"

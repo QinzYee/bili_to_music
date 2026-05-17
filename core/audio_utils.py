@@ -1,7 +1,17 @@
 import os
 import subprocess
+import sys
 
 from config import FFMPEG_PATH
+
+
+def _get_startupinfo():
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        return startupinfo
+    return None
 
 
 def is_ffmpeg_available() -> bool:
@@ -11,6 +21,8 @@ def is_ffmpeg_available() -> bool:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=5,
+            startupinfo=_get_startupinfo(),
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         return result.returncode == 0
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
@@ -41,6 +53,8 @@ def convert_audio(input_path: str, output_path: str, output_format: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=120,
+            startupinfo=_get_startupinfo(),
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         if result.returncode != 0:
             raise RuntimeError(f"FFmpeg 错误: {result.stderr.decode('utf-8', errors='ignore')}")
