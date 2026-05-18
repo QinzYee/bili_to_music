@@ -6,7 +6,7 @@ from datetime import datetime
 
 
 APP_NAME = "BilibiliAudioDownloader"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 DIST_DIR = "dist"
 BUILD_DIR = os.path.join(DIST_DIR, APP_NAME)
 OUTPUT_DIR = "output"
