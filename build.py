@@ -23,8 +23,44 @@ def clean_old_build():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+def copy_qt_plugins():
+    """手动复制必要的 Qt 插件，确保程序能正常启动"""
+    print("复制 Qt 插件...")
+    
+    try:
+        import PySide6
+        pyside6_dir = os.path.dirname(PySide6.__file__)
+    except ImportError:
+        print("警告: 无法找到 PySide6")
+        return
+    
+    target_plugins_dir = os.path.join(BUILD_DIR, "_internal", "PySide6", "plugins")
+    
+    required_plugins = [
+        "platforms",
+        "styles",
+        "iconengines",
+        "imageformats",
+    ]
+    
+    for plugin_dir in required_plugins:
+        src_dir = os.path.join(pyside6_dir, "plugins", plugin_dir)
+        dst_dir = os.path.join(target_plugins_dir, plugin_dir)
+        
+        if os.path.exists(src_dir):
+            os.makedirs(dst_dir, exist_ok=True)
+            for item in os.listdir(src_dir):
+                src_item = os.path.join(src_dir, item)
+                dst_item = os.path.join(dst_dir, item)
+                if os.path.isfile(src_item):
+                    shutil.copy2(src_item, dst_item)
+                elif os.path.isdir(src_item):
+                    shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+            print(f"  已复制: {plugin_dir}")
+
+
 def create_pyinstaller_spec():
-    """创建 PyInstaller spec 文件以获得更精细的控制"""
+    """创建 PyInstaller spec 文件"""
     spec_content = '''# -*- mode: python ; coding: utf-8 -*-
 
 block_cipher = None
@@ -47,7 +83,7 @@ a = Analysis(
         'PySide6.QtWidgets',
     ],
     hookspath=[],
-    hooksconfig={{}},
+    hooksconfig={},
     runtime_hooks=[],
     excludes=[
         'tkinter',
@@ -91,7 +127,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='{APP_NAME}',
+    name='APP_NAME',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -113,9 +149,9 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='{APP_NAME}',
+    name='APP_NAME',
 )
-'''.format(APP_NAME=APP_NAME)
+'''.replace('APP_NAME', APP_NAME)
 
     with open(f"{APP_NAME}.spec", 'w', encoding='utf-8') as f:
         f.write(spec_content)
@@ -131,42 +167,9 @@ def build_with_spec():
         raise Exception("PyInstaller 构建失败")
 
 
-def optimize_build():
-    """优化构建输出，删除不必要的文件"""
-    print("优化构建输出...")
-    
-    # 删除不需要的 Qt 插件，但保留必要的
-    plugins_dir = os.path.join(BUILD_DIR, "PySide6", "plugins")
-    if os.path.exists(plugins_dir):
-        # 保留的插件列表
-        keep_plugins = [
-            "platforms",
-            "styles",
-            "platformthemes",
-            "iconengines",
-            "imageformats",
-        ]
-        for item in os.listdir(plugins_dir):
-            item_path = os.path.join(plugins_dir, item)
-            if item not in keep_plugins:
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                else:
-                    os.remove(item_path)
-    
-    # 清理 translations 目录
-    translations_dir = os.path.join(BUILD_DIR, "PySide6", "translations")
-    if os.path.exists(translations_dir):
-        for item in os.listdir(translations_dir):
-            if not item.startswith("qt_zh") and not item.startswith("qtbase_zh"):
-                item_path = os.path.join(translations_dir, item)
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-
-
 def create_readme_in_package():
     """在打包目录中创建使用说明"""
-    readme_content = """B站视频音频下载工具
+    readme_content = '''B站视频音频下载工具
 ================
 
 使用说明：
@@ -178,14 +181,45 @@ def create_readme_in_package():
 6. 点击"批量下载"开始下载
 
 注意：
-- mp3格式需要ffmpeg（已包含在resources目录中）
+- mp3格式需要ffmpeg（已包含在程序中）
 - 本工具仅供学习使用，请遵守相关法律法规
 - 下载内容版权归原作者所有
-""".format(APP_NAME=APP_NAME)
+'''.replace('{APP_NAME}', APP_NAME)
 
     readme_path = os.path.join(BUILD_DIR, "使用说明.txt")
     with open(readme_path, 'w', encoding='utf-8') as f:
         f.write(readme_content)
+
+
+def verify_resources():
+    """验证资源文件是否正确打包"""
+    print("验证资源文件...")
+    required_files = [
+        "resources/ffmpeg.exe",
+        "resources/icon.ico",
+        "resources/图文教程.md",
+        "resources/提取bv图文教程1.png",
+        "resources/提取bv图文教程2.png",
+        "resources/界面预览.png",
+    ]
+    
+    all_found = True
+    for f in required_files:
+        full_path = os.path.join(BUILD_DIR, "_internal", f)
+        if os.path.exists(full_path):
+            print(f"[OK] {f}")
+        else:
+            print(f"[X] {f} (未找到)")
+            all_found = False
+    
+    platforms_dir = os.path.join(BUILD_DIR, "_internal", "PySide6", "plugins", "platforms")
+    if os.path.exists(platforms_dir) and os.path.exists(os.path.join(platforms_dir, "qwindows.dll")):
+        print("[OK] Qt 平台插件")
+    else:
+        print("[X] Qt 平台插件缺失")
+        all_found = False
+    
+    return all_found
 
 
 def create_zip():
@@ -206,38 +240,12 @@ def create_zip():
     return zip_path
 
 
-def verify_resources():
-    """验证资源文件是否正确打包"""
-    print("验证资源文件...")
-    required_files = [
-        "resources/ffmpeg.exe",
-        "resources/icon.ico",
-        "resources/图文教程.md",
-        "resources/提取bv图文教程1.png",
-        "resources/提取bv图文教程2.png",
-        "resources/界面预览.png",
-    ]
-    
-    all_found = True
-    for f in required_files:
-        # 在 _internal 目录下查找
-        full_path = os.path.join(BUILD_DIR, "_internal", f)
-        if os.path.exists(full_path):
-            print(f"[OK] {f}")
-        else:
-            print(f"[X] {f} (未找到)")
-            all_found = False
-    
-    return all_found
-
-
 def main():
     try:
         clean_old_build()
         create_pyinstaller_spec()
         build_with_spec()
-        # 先禁用优化，确保程序能正常运行
-        # optimize_build()
+        copy_qt_plugins()
         create_readme_in_package()
         
         if not verify_resources():
