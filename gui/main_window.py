@@ -1,8 +1,5 @@
 import os
 import re
-import tempfile
-import webbrowser
-import sys
 from bs4 import BeautifulSoup
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -10,10 +7,10 @@ from PySide6.QtWidgets import (
     QProgressBar, QRadioButton, QButtonGroup,
     QFileDialog, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QSpinBox,
-    QStackedWidget, QSplitter, QFrame, QDialog, QScrollArea, QGraphicsView, QGraphicsScene, QApplication
+    QStackedWidget, QFrame, QDialog, QScrollArea, QGraphicsView, QGraphicsScene
 )
-from PySide6.QtCore import QThread, Signal, Qt, QSize
-from PySide6.QtGui import QGuiApplication, QClipboard, QPixmap, QImage
+from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtGui import QGuiApplication, QPixmap
 
 from core.bilibili_api import extract_bvid, get_video_info, get_audio_url
 from core.downloader import download_file
@@ -118,7 +115,11 @@ class ClickableImageLabel(QLabel):
 
 
 class TutorialDialog(QDialog):
-    """图文教程对话框 - 读取真实MD文件"""
+    """图文教程对话框 - 读取真实MD文件，渲染结果缓存为类变量"""
+    _cached_tokens = None
+    _cached_mtime = None
+    _cached_md_path = None
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._setup_ui()
@@ -248,88 +249,119 @@ class TutorialDialog(QDialog):
         a_label.setStyleSheet("font-size: 14px; color: #666; line-height: 1.8; padding: 4px 0 12px 25px;")
         self.content_layout.addWidget(a_label)
     
+    @classmethod
+    def _parse_tokens_from_md(cls, md_path):
+        """解析 MD 文件为 token 列表（带类级缓存，文件未变则复用）"""
+        try:
+            mtime = os.path.getmtime(md_path)
+        except OSError:
+            return None
+        if (
+            cls._cached_tokens is not None
+            and cls._cached_md_path == md_path
+            and cls._cached_mtime == mtime
+        ):
+            return cls._cached_tokens
+
+        tokens = []
+        try:
+            with open(md_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            lines = content.split('\n')
+            list_stack = []
+
+            for line in lines:
+                line = line.rstrip()
+
+                if not line:
+                    continue
+
+                if line.startswith('#'):
+                    level = len(line) - len(line.lstrip('#'))
+                    text = line.lstrip('#').strip()
+                    tokens.append(('heading', text, level))
+                    list_stack = []
+
+                elif line.startswith('***') or line.startswith('---'):
+                    tokens.append(('divider',))
+                    list_stack = []
+
+                elif line.startswith('!['):
+                    img_match = re.search(r'!\[.*?\]\((.*?)\)', line)
+                    if img_match:
+                        tokens.append(('image', img_match.group(1)))
+                    list_stack = []
+
+                elif re.match(r'^\d+\.', line):
+                    num = int(line.split('.')[0])
+                    text = line.split('.', 1)[1].strip()
+                    tokens.append(('list_ordered', text, num))
+                    list_stack.append('ordered')
+
+                elif line.startswith('- ') or line.startswith('* '):
+                    text = line[2:].strip()
+                    tokens.append(('list_unordered', text))
+                    list_stack.append('unordered')
+
+                elif line.startswith('Q:'):
+                    q_text = line.replace('Q:', '').strip()
+                    list_stack = ['faq_q', q_text]
+
+                elif line.startswith('A:'):
+                    a_text = line.replace('A:', '').strip()
+                    if list_stack and list_stack[0] == 'faq_q':
+                        tokens.append(('faq', list_stack[1], a_text))
+                        list_stack = []
+
+                else:
+                    tokens.append(('paragraph', line))
+                    list_stack = []
+
+        except Exception:
+            return None
+
+        cls._cached_tokens = tokens
+        cls._cached_mtime = mtime
+        cls._cached_md_path = md_path
+        return tokens
+
     def _load_tutorial_from_md(self):
-        """从MD文件加载教程内容"""
+        """从MD文件加载教程内容（优先使用缓存 token）"""
         md_path = os.path.join(self._get_resource_path(), "图文教程.md")
-        
+
         if not os.path.exists(md_path):
-            # 显示调试信息
             debug_info = f"教程文件未找到！\n尝试路径: {md_path}\n资源目录: {self._get_resource_path()}"
             self._add_paragraph(debug_info)
             self.content_layout.addStretch()
             return
-        
-        try:
-            with open(md_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # 解析MD
-            lines = content.split('\n')
-            list_stack = []  # 跟踪列表状态
-            
-            for line in lines:
-                line = line.rstrip()
-                
-                # 空行
-                if not line:
-                    continue
-                
-                # 标题
-                if line.startswith('#'):
-                    level = len(line) - len(line.lstrip('#'))
-                    text = line.lstrip('#').strip()
-                    self._add_heading(text, level)
-                    list_stack = []
-                
-                # 分隔线
-                elif line.startswith('***') or line.startswith('---'):
-                    self._add_divider()
-                    list_stack = []
-                
-                # 图片
-                elif line.startswith('!['):
-                    # 解析 ![alt](filename.png)
-                    img_match = re.search(r'!\[.*?\]\((.*?)\)', line)
-                    if img_match:
-                        img_name = img_match.group(1)
-                        self._add_image(img_name)
-                    list_stack = []
-                
-                # 有序列表
-                elif re.match(r'^\d+\.', line):
-                    num = int(line.split('.')[0])
-                    text = line.split('.', 1)[1].strip()
-                    self._add_list_item(text, True, num)
-                    list_stack.append('ordered')
-                
-                # 无序列表
-                elif line.startswith('- ') or line.startswith('* '):
-                    text = line[2:].strip()
-                    self._add_list_item(text, False)
-                    list_stack.append('unordered')
-                
-                # FAQ Q
-                elif line.startswith('Q:'):
-                    q_text = line.replace('Q:', '').strip()
-                    list_stack = ['faq_q', q_text]
-                
-                # FAQ A
-                elif line.startswith('A:'):
-                    a_text = line.replace('A:', '').strip()
-                    if list_stack and list_stack[0] == 'faq_q':
-                        self._add_faq(list_stack[1], a_text)
-                        list_stack = []
-                
-                # 普通段落
-                else:
-                    self._add_paragraph(line)
-                    list_stack = []
-            
+
+        tokens = self._parse_tokens_from_md(md_path)
+
+        if tokens is None:
+            self._add_paragraph("加载教程失败: 无法读取或解析教程文件")
             self.content_layout.addStretch()
-            
-        except Exception as e:
-            self._add_paragraph(f"加载教程失败: {str(e)}")
-            self.content_layout.addStretch()
+            return
+
+        # 根据 token 构建 UI
+        for token in tokens:
+            t = token[0]
+            if t == 'heading':
+                self._add_heading(token[1], token[2])
+            elif t == 'divider':
+                self._add_divider()
+            elif t == 'image':
+                self._add_image(token[1])
+            elif t == 'list_ordered':
+                self._add_list_item(token[1], True, token[2])
+            elif t == 'list_unordered':
+                self._add_list_item(token[1], False)
+            elif t == 'faq':
+                self._add_faq(token[1], token[2])
+            elif t == 'paragraph':
+                self._add_paragraph(token[1])
+
+        self.content_layout.addStretch()
 
 
 class ParseWorker(QThread):
@@ -351,6 +383,10 @@ class ParseWorker(QThread):
             self.finished.emit(info, self.row_id)
         except Exception as e:
             self.error.emit(f"解析失败: {e}", self.row_id)
+
+
+# 最大日志行数
+MAX_LOG_LINES = 500
 
 
 class BatchDownloadWorker(QThread):
@@ -460,7 +496,9 @@ class MainWindow(QMainWindow):
         self.video_infos = {}
         self.download_worker = None
         self._parse_workers = []  # 跟踪所有解析工作线程
+        self._bv_cache = None     # 缓存 BV 解析结果，避免重复解析 HTML
         self._setup_ui()
+        self._apply_stylesheet()
     
     def closeEvent(self, event):
         """窗口关闭时清理资源"""
@@ -469,12 +507,93 @@ class MainWindow(QMainWindow):
             if self.download_worker and self.download_worker.isRunning():
                 self.download_worker.cancel()
                 self.download_worker.wait()
-            
+
             # 保留解析线程引用，让Qt自然处理
             event.accept()
         except Exception as e:
             print(f"关闭窗口时出错: {e}")
             event.accept()
+
+    def _apply_stylesheet(self):
+        """应用全局样式表"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f5f6fa;
+            }
+            QLabel {
+                font-size: 13px;
+                color: #2d3436;
+            }
+            QPushButton {
+                font-size: 13px;
+                padding: 6px 16px;
+                border: 1px solid #dcdde1;
+                border-radius: 4px;
+                background-color: #fafafa;
+                color: #2d3436;
+            }
+            QPushButton:hover {
+                background-color: #e8e8e8;
+                border-color: #bbb;
+            }
+            QPushButton:pressed {
+                background-color: #ddd;
+            }
+            QPushButton:disabled {
+                background-color: #f0f0f0;
+                color: #999;
+                border-color: #e0e0e0;
+            }
+            QLineEdit, QTextEdit, QSpinBox {
+                border: 1px solid #dcdde1;
+                border-radius: 4px;
+                padding: 4px 6px;
+                background-color: white;
+                font-size: 13px;
+            }
+            QLineEdit:focus, QTextEdit:focus, QSpinBox:focus {
+                border-color: #4CAF50;
+            }
+            QTableWidget {
+                border: 1px solid #dcdde1;
+                border-radius: 4px;
+                background-color: white;
+                gridline-color: #f0f0f0;
+                font-size: 13px;
+            }
+            QTableWidget::item {
+                padding: 4px 8px;
+            }
+            QHeaderView::section {
+                background-color: #fafafa;
+                border: none;
+                border-bottom: 2px solid #e0e0e0;
+                padding: 8px 6px;
+                font-size: 12px;
+                font-weight: bold;
+                color: #555;
+            }
+            QProgressBar {
+                border: 1px solid #dcdde1;
+                border-radius: 6px;
+                text-align: center;
+                font-size: 12px;
+                height: 22px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 5px;
+            }
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QSplitter::handle {
+                background-color: #dcdde1;
+                width: 2px;
+                height: 2px;
+            }
+        """)
 
     def _setup_ui(self):
         self.setWindowTitle("B站视频音频下载工具")
@@ -522,8 +641,12 @@ class MainWindow(QMainWindow):
 
     def _switch_page(self, index):
         self.stacked_widget.setCurrentIndex(index)
-        self.nav_btn1.setStyleSheet("" if index != 0 else "background-color: #4CAF50; color: white; font-weight: bold;")
-        self.nav_btn2.setStyleSheet("" if index != 1 else "background-color: #4CAF50; color: white; font-weight: bold;")
+        # 活动按钮样式
+        active_style = "background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; border: none;"
+        # 非活动按钮样式（保留明确的视觉状态）
+        inactive_style = "background-color: #fafafa; color: #555; border: 1px solid #dcdde1; border-radius: 4px;"
+        self.nav_btn1.setStyleSheet(active_style if index == 0 else inactive_style)
+        self.nav_btn2.setStyleSheet(active_style if index == 1 else inactive_style)
 
     def _create_page1(self):
         page1 = QWidget()
@@ -737,18 +860,30 @@ class MainWindow(QMainWindow):
         
         return results
 
+    def _parse_bv_from_html(self):
+        """解析 BV 号（带缓存），返回列表或从缓存读取"""
+        html_content = self.html_input.toPlainText().strip()
+        if not html_content:
+            return None
+        # 仅在内容变化时重新解析
+        if self._bv_cache and self._bv_cache.get("html") == html_content:
+            return self._bv_cache.get("results", [])
+        results = self._extract_bv_from_html(html_content)
+        self._bv_cache = {"html": html_content, "results": results}
+        return results
+
     def _on_parse_bv(self):
         html_content = self.html_input.toPlainText().strip()
-        
+
         if not html_content:
             QMessageBox.warning(self, "提示", "请先粘贴HTML源码！")
             return
 
         self.bv_status_label.setText("正在解析...")
-        
+
         try:
-            results = self._extract_bv_from_html(html_content)
-            
+            results = self._parse_bv_from_html() or []
+
             if not results:
                 self.bv_result_text.setPlainText("未找到BV号")
                 self.bv_status_label.setText("未找到BV号")
@@ -758,7 +893,7 @@ class MainWindow(QMainWindow):
 
             display_text = f"找到 {len(results)} 个BV号：\n"
             display_text += "=" * 50 + "\n\n"
-            
+
             for i, item in enumerate(results, 1):
                 display_text += f"{i}. BV号: {item['bv']}\n"
                 display_text += f"   链接: {item['url']}\n\n"
@@ -767,7 +902,7 @@ class MainWindow(QMainWindow):
             self.bv_status_label.setText(f"解析完成，找到 {len(results)} 个BV号")
             self.copy_bv_btn.setEnabled(True)
             self.load_bv_btn.setEnabled(True)
-            
+
         except Exception as e:
             QMessageBox.critical(self, "错误", f"解析失败: {str(e)}")
             self.bv_status_label.setText("解析失败")
@@ -778,9 +913,10 @@ class MainWindow(QMainWindow):
         self.copy_bv_btn.setEnabled(False)
         self.load_bv_btn.setEnabled(False)
         self.bv_status_label.setText("就绪")
+        self._bv_cache = None
 
     def _on_copy_bv(self):
-        results = self._extract_bv_from_html(self.html_input.toPlainText())
+        results = self._parse_bv_from_html() or []
         if results:
             urls = '\n'.join([item['url'] for item in results])
             clipboard = QGuiApplication.clipboard()
@@ -788,7 +924,7 @@ class MainWindow(QMainWindow):
             self.bv_status_label.setText("已复制全部链接到剪贴板！")
 
     def _on_load_bv(self):
-        results = self._extract_bv_from_html(self.html_input.toPlainText())
+        results = self._parse_bv_from_html() or []
         if results:
             urls = '\n'.join([item['url'] for item in results])
             self.url_input.setPlainText(urls)
@@ -797,6 +933,13 @@ class MainWindow(QMainWindow):
 
     def _log(self, msg: str):
         self.log_text.append(msg)
+        # 限制日志行数，防止内存无限增长
+        if self.log_text.document().blockCount() > MAX_LOG_LINES:
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.select(cursor.SelectionType.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # 删除残留的换行符
 
     def _choose_dir(self):
         dir_path = QFileDialog.getExistingDirectory(self, "选择保存目录")
@@ -824,71 +967,88 @@ class MainWindow(QMainWindow):
         self._pending_parse = 0
         self._total_parse = len(urls)
 
-        for url in urls:
-            row = self.task_table.rowCount()
-            self.task_table.insertRow(row)
+        # 批量插入时暂停界面重绘，提升性能
+        self.task_table.setUpdatesEnabled(False)
+        try:
+            for url in urls:
+                row = self.task_table.rowCount()
+                self.task_table.insertRow(row)
 
-            title_item = QTableWidgetItem("解析中...")
-            title_item.setFlags(title_item.flags() & ~Qt.ItemIsEditable)
-            self.task_table.setItem(row, 0, title_item)
+                title_item = QTableWidgetItem("解析中...")
+                title_item.setFlags(title_item.flags() & ~Qt.ItemIsEditable)
+                self.task_table.setItem(row, 0, title_item)
 
-            custom_title_item = QTableWidgetItem("")
-            self.task_table.setItem(row, 1, custom_title_item)
+                custom_title_item = QTableWidgetItem("")
+                self.task_table.setItem(row, 1, custom_title_item)
 
-            start_spin = QSpinBox()
-            start_spin.setMinimum(1)
-            start_spin.setMaximum(9999)
-            start_spin.setValue(1)
-            self.task_table.setCellWidget(row, 2, start_spin)
+                start_spin = QSpinBox()
+                start_spin.setMinimum(1)
+                start_spin.setMaximum(9999)
+                start_spin.setValue(1)
+                self.task_table.setCellWidget(row, 2, start_spin)
 
-            end_spin = QSpinBox()
-            end_spin.setMinimum(1)
-            end_spin.setMaximum(9999)
-            end_spin.setValue(1)
-            self.task_table.setCellWidget(row, 3, end_spin)
+                end_spin = QSpinBox()
+                end_spin.setMinimum(1)
+                end_spin.setMaximum(9999)
+                end_spin.setValue(1)
+                self.task_table.setCellWidget(row, 3, end_spin)
 
-            total_item = QTableWidgetItem("-")
-            total_item.setFlags(total_item.flags() & ~Qt.ItemIsEditable)
-            total_item.setTextAlignment(Qt.AlignCenter)
-            self.task_table.setItem(row, 4, total_item)
+                total_item = QTableWidgetItem("-")
+                total_item.setFlags(total_item.flags() & ~Qt.ItemIsEditable)
+                total_item.setTextAlignment(Qt.AlignCenter)
+                self.task_table.setItem(row, 4, total_item)
 
-            status_item = QTableWidgetItem("解析中...")
-            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
-            self.task_table.setItem(row, 5, status_item)
+                status_item = QTableWidgetItem("解析中...")
+                status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+                self.task_table.setItem(row, 5, status_item)
 
-            self._pending_parse += 1
+                self._pending_parse += 1
 
-            worker = ParseWorker(url, str(row))
-            worker.finished.connect(self._on_parse_finished)
-            worker.error.connect(self._on_parse_error)
-            worker.start()
-            
-            # 保存到列表中，保持引用但不主动删除
-            self._parse_workers.append(worker)
+                worker = ParseWorker(url, str(row))
+                worker.finished.connect(self._on_parse_finished)
+                worker.error.connect(self._on_parse_error)
+                worker.start()
+
+                # 保存到列表中，保持引用但不主动删除
+                self._parse_workers.append(worker)
+        finally:
+            # 恢复界面重绘
+            self.task_table.setUpdatesEnabled(True)
 
         self._update_task_count()
         self._log(f"正在解析 {len(urls)} 个链接...")
 
+    def _on_parse_complete(self):
+        """解析全部完成时的统一处理"""
+        self.parse_btn.setEnabled(True)
+        has_valid = len(self.video_infos) > 0
+        self.download_btn.setEnabled(has_valid)
+        # 清理已完成的 worker 引用
+        self._parse_workers = [
+            w for w in self._parse_workers
+            if w.isRunning()
+        ]
+
     def _on_parse_finished(self, info: dict, row_id: str):
         try:
             row = int(row_id)
-            
+
             # 安全检查
             if row < 0 or row >= self.task_table.rowCount():
                 self._log(f"警告: 无效的行号 {row}")
                 return
-            
+
             total_pages = len(info.get("pages", []))
 
             title_item = self.task_table.item(row, 0)
             if title_item:
                 title_item.setText(info.get("title", "未知标题"))
                 title_item.setData(Qt.UserRole, info.get("bvid", ""))  # 存储 BV 号作为唯一标识
-            
+
             total_pages_item = self.task_table.item(row, 4)
             if total_pages_item:
                 total_pages_item.setText(str(total_pages))
-            
+
             status_item = self.task_table.item(row, 5)
             if status_item:
                 status_item.setText("已解析")
@@ -913,23 +1073,21 @@ class MainWindow(QMainWindow):
             # 更新解析状态
             self._pending_parse -= 1
             if self._pending_parse <= 0:
-                self.parse_btn.setEnabled(True)
-                has_valid = len(self.video_infos) > 0
-                self.download_btn.setEnabled(has_valid)
+                self._on_parse_complete()
                 self._log(f"{self._total_parse}个已解析完成！")
 
     def _on_parse_error(self, err: str, row_id: str):
         try:
             row = int(row_id)
-            
-            if row >= 0 and row < self.task_table.rowCount():
+
+            if 0 <= row < self.task_table.rowCount():
                 title_item = self.task_table.item(row, 0)
                 if title_item:
                     title_item.setText("解析失败")
                 status_item = self.task_table.item(row, 5)
                 if status_item:
                     status_item.setText("失败")
-            
+
             self._log(f"第{row + 1}行解析失败: {err}")
         except Exception as e:
             self._log(f"处理解析错误时出错: {e}")
@@ -937,17 +1095,21 @@ class MainWindow(QMainWindow):
             # 更新解析状态
             self._pending_parse -= 1
             if self._pending_parse <= 0:
-                self.parse_btn.setEnabled(True)
-                has_valid = len(self.video_infos) > 0
-                self.download_btn.setEnabled(has_valid)
+                self._on_parse_complete()
                 self._log(f"{self._total_parse}个已解析完成（部分失败）")
 
     def _on_remove_selected(self):
         rows = set(item.row() for item in self.task_table.selectedItems())
-        for row in sorted(rows, reverse=True):
-            if row in self.video_infos:
-                del self.video_infos[row]
-            self.task_table.removeRow(row)
+        if not rows:
+            return
+        self.task_table.setUpdatesEnabled(False)
+        try:
+            for row in sorted(rows, reverse=True):
+                if row in self.video_infos:
+                    del self.video_infos[row]
+                self.task_table.removeRow(row)
+        finally:
+            self.task_table.setUpdatesEnabled(True)
         self.video_infos = self._rebuild_info_map()
         self.download_btn.setEnabled(len(self.video_infos) > 0)
         self._update_task_count()
